@@ -33,6 +33,10 @@ pub enum LibraryRequest {
     Open { id: String },
     /// Keep the document `uid` as the library file `id` (None: a new file).
     Save { uid: u64, id: Option<String>, name: String, bytes: Vec<u8>, thumbnail: Option<Vec<u8>> },
+    /// Keep an exported PNG in the library (`name` without the extension).
+    Export { name: String, bytes: Vec<u8> },
+    /// Download a library file (an export) to the computer.
+    Download { id: String },
     /// Send the list again.
     Refresh,
     /// Go back to the page's own apps.
@@ -44,6 +48,8 @@ pub struct Library {
     /// The section's name in the home sidebar.
     pub title: String,
     pub files: Vec<LibraryFile>,
+    /// Exported pictures kept in the library (their `thumb` is the picture itself).
+    pub exports: Vec<LibraryFile>,
     /// Shown as a list rather than cards.
     pub list_view: bool,
     pub outbox: Vec<LibraryRequest>,
@@ -57,10 +63,25 @@ pub struct Library {
 }
 
 impl Library {
-    pub fn set_files(&mut self, files: Vec<LibraryFile>) {
-        self.textures.retain(|(id, len), _| files.iter().any(|f| &f.id == id && f.thumb.as_ref().map_or(0, Vec::len) == *len));
+    pub fn set_files(&mut self, files: Vec<LibraryFile>, exports: Vec<LibraryFile>) {
+        self.textures.retain(|(id, len), _| {
+            files.iter().chain(&exports).any(|f| &f.id == id && f.thumb.as_ref().map_or(0, Vec::len) == *len)
+        });
         self.files = files;
+        self.exports = exports;
     }
+}
+
+/// Keep an exported PNG in the library instead of downloading it, named after the file and what
+/// was exported ("Brand kit · Page 1"). False when there is no library or `name` isn't a PNG.
+pub(crate) fn export(app: &mut FigApp, name: &str, bytes: &[u8]) -> bool {
+    let Some(stem) = name.strip_suffix(".png").or_else(|| name.strip_suffix(".PNG")) else { return false };
+    let Some(library) = app.library.as_mut() else { return false };
+    let file = app.session.doc().map(|d| d.name.clone()).unwrap_or_default();
+    let name = if file.is_empty() || file == stem { stem.to_string() } else { format!("{file} · {stem}") };
+    library.outbox.push(LibraryRequest::Export { name, bytes: bytes.to_vec() });
+    app.toast(tr("Saving the export to the Library…"));
+    true
 }
 
 /// Save the file in front to the library (`copy`: as a new file even if it came from there).
@@ -145,13 +166,49 @@ pub(crate) fn section(app: &mut FigApp, ui: &mut Ui, t: &Tokens) {
         ui.label(egui::RichText::new(tr("Nothing saved yet")).font(semibold(13.0)).color(t.text));
         ui.add_space(6.0);
         widgets::label(ui, tr("Save a design (File ▸ Save) to keep it here."), t.text_secondary);
-    } else if library.list_view {
-        for file in &library.files {
+    } else {
+        chosen = files(ui, t, &library.files, library.list_view, &mut library.textures, Icon::Frame);
+    }
+    // Exported pictures, for Social Studio and anything else that uses finished images.
+    let mut download = None;
+    if !library.exports.is_empty() {
+        ui.add_space(28.0);
+        ui.label(egui::RichText::new(tr("Exports")).font(semibold(12.0)).color(t.text_secondary));
+        ui.add_space(4.0);
+        widgets::label(ui, tr("PNGs exported from your designs. Click one to download it."), t.text_tertiary);
+        ui.add_space(12.0);
+        download = files(ui, t, &library.exports, library.list_view, &mut library.textures, Icon::Image);
+    }
+    if let Some(id) = chosen {
+        library.outbox.push(LibraryRequest::Open { id });
+        ui.ctx().request_repaint();
+    }
+    if let Some(id) = download {
+        library.outbox.push(LibraryRequest::Download { id });
+        ui.ctx().request_repaint();
+    }
+    if new_file && app.run("file.new", serde_json::json!({})).is_some() {
+        app.ui.home = false;
+    }
+}
+
+/// `list` as cards or rows (`mark`: the rows' icon); the id of the one chosen.
+fn files(
+    ui: &mut Ui,
+    t: &Tokens,
+    list: &[LibraryFile],
+    list_view: bool,
+    textures: &mut BTreeMap<(String, usize), Option<egui::TextureHandle>>,
+    mark: Icon,
+) -> Option<String> {
+    let mut chosen = None;
+    if list_view {
+        for file in list {
             let (r, _) = ui.allocate_exact_size(vec2(ui.available_width().min(760.0), 40.0), Sense::hover());
             let resp = ui.interact(r, Id::new(("library_row", &file.id)), Sense::click());
             crate::a11y::button(&resp, &file.name);
             let row = crate::home::FileRow {
-                mark: Some((Icon::Frame, t.icon_secondary)),
+                mark: Some((mark, t.icon_secondary)),
                 name: &file.name,
                 ink: t.text,
                 detail: &file.detail,
@@ -163,32 +220,27 @@ pub(crate) fn section(app: &mut FigApp, ui: &mut Ui, t: &Tokens) {
                 chosen = Some(file.id.clone());
             }
         }
-    } else {
-        let columns = (((ui.available_width() + GAP) / (CARD_W + GAP)).floor() as usize).max(1);
-        for row in library.files.chunks(columns) {
-            ui.horizontal(|ui| {
-                for file in row {
-                    let key = (file.id.clone(), file.thumb.as_ref().map_or(0, Vec::len));
-                    let texture = library.textures.entry(key).or_insert_with(|| picture(ui.ctx(), file)).clone();
-                    if card(ui, t, file, texture.as_ref()) {
-                        chosen = Some(file.id.clone());
-                    }
+        return chosen;
+    }
+    let columns = (((ui.available_width() + GAP) / (CARD_W + GAP)).floor() as usize).max(1);
+    for row in list.chunks(columns) {
+        ui.horizontal(|ui| {
+            for file in row {
+                let key = (file.id.clone(), file.thumb.as_ref().map_or(0, Vec::len));
+                let texture = textures.entry(key).or_insert_with(|| picture(ui.ctx(), file)).clone();
+                if card(ui, t, file, texture.as_ref()) {
+                    chosen = Some(file.id.clone());
                 }
-            });
-            ui.add_space(GAP);
-        }
+            }
+        });
+        ui.add_space(GAP);
     }
-    if let Some(id) = chosen {
-        library.outbox.push(LibraryRequest::Open { id });
-        ui.ctx().request_repaint();
-    }
-    if new_file && app.run("file.new", serde_json::json!({})).is_some() {
-        app.ui.home = false;
-    }
+    chosen
 }
 
 fn picture(ctx: &egui::Context, file: &LibraryFile) -> Option<egui::TextureHandle> {
-    let rgba = image::load_from_memory(file.thumb.as_ref()?).ok()?.to_rgba8();
+    // Exports can be large pictures: a card only needs a small one (and textures have a size limit).
+    let rgba = image::load_from_memory(file.thumb.as_ref()?).ok()?.thumbnail(800, 800).to_rgba8();
     let image = egui::ColorImage::from_rgba_unmultiplied([rgba.width() as usize, rgba.height() as usize], rgba.as_raw());
     Some(ctx.load_texture(format!("library-thumb-{}", file.id), image, egui::TextureOptions::LINEAR))
 }

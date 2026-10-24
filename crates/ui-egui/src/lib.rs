@@ -1276,10 +1276,16 @@ impl FigApp {
         true
     }
 
-    /// Download a command's base64 `data` as `name`, with a toast saying how it went.
+    /// Download a command's base64 `data` as `name`, with a toast saying how it went. PNGs go to the
+    /// embedding page's library instead, where there is one ([`library::export`]).
     pub(crate) fn download_data(&mut self, name: &str, data: &Value) {
         use base64::Engine as _;
         let bytes = data.as_str().and_then(|d| base64::engine::general_purpose::STANDARD.decode(d).ok());
+        if let Some(b) = &bytes
+            && library::export(self, name, b)
+        {
+            return;
+        }
         if bytes.is_some_and(|b| self.services.download(name, &b)) {
             self.toast(i18n::trf("Exported {name}", &[("name", &name)]));
         } else {
