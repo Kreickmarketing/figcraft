@@ -1140,6 +1140,10 @@ impl FigApp {
     }
 
     pub fn save_as_dialog(&mut self) {
+        if self.services.downloads() {
+            self.download_file();
+            return;
+        }
         let Ok(name) = self.session.doc().map(|d| d.name.clone()) else { return };
         self.pick_save(i18n::tr("Save as"), &format!("{name}.figcraft"), &["figcraft", "fig"], |app, mut p| {
             if p.extension().is_none_or(|e| e.is_empty()) {
@@ -1247,6 +1251,42 @@ impl FigApp {
     /// Pick a folder; `done` runs as [`FigApp::pick_open`]'s does.
     pub fn pick_folder(&mut self, title: &str, done: impl FnOnce(&mut FigApp, PathBuf) + 'static) {
         self.start_dialog(|services| services.pick_folder(title), true, done);
+    }
+
+    /// Where the platform saves by handing files over as downloads (the browser): run `cmd` without
+    /// a path and download the file it returns as `name`. False where the platform has save dialogs,
+    /// for the caller to open one.
+    pub(crate) fn download_export(&mut self, cmd: &str, params: Value, name: &str) -> bool {
+        if !self.services.downloads() {
+            return false;
+        }
+        if let Some(r) = self.run(cmd, params) {
+            self.download_data(name, &r["data"]);
+        }
+        true
+    }
+
+    /// Download a command's base64 `data` as `name`, with a toast saying how it went.
+    pub(crate) fn download_data(&mut self, name: &str, data: &Value) {
+        use base64::Engine as _;
+        let bytes = data.as_str().and_then(|d| base64::engine::general_purpose::STANDARD.decode(d).ok());
+        if bytes.is_some_and(|b| self.services.download(name, &b)) {
+            self.toast(i18n::trf("Exported {name}", &[("name", &name)]));
+        } else {
+            self.toast(i18n::tr("Couldn't download the file"));
+        }
+    }
+
+    /// The browser: the file in front as a `.figcraft` download, since there is no path to save to.
+    fn download_file(&mut self) {
+        let tab = figcraft_engine::branches::file_tab(&self.session);
+        let Some(ds) = self.session.docs.get(tab) else { return };
+        let name = format!("{}.figcraft", ds.doc.name);
+        match figcraft_engine::cmd::file::file_bytes(ds) {
+            Ok(bytes) if self.services.download(&name, &bytes) => self.toast(i18n::trf("Downloaded {file}", &[("file", &name)])),
+            Ok(_) => self.toast(i18n::tr("Couldn't download the file")),
+            Err(e) => self.toast(e.to_string()),
+        }
     }
 
     /// Open a native dialog from the window drawing now, for the file in front (`pin`).

@@ -681,6 +681,9 @@ pub(crate) fn fig_exported(app: &mut FigApp, result: &Value) {
 /// Save the whole file as `.fig`; the toast says how much was left out.
 fn save_fig(app: &mut FigApp, name: &str) {
     let filename = format!("{name}.fig");
+    if app.download_export("file.export", json!({"format": "fig"}), &filename) {
+        return;
+    }
     app.pick_save(tr("Export"), &filename, &["fig"], |app, p| {
         if let Some(r) = app.run("file.export", json!({"format": "fig", "path": p.to_string_lossy()})) {
             fig_exported(app, &r);
