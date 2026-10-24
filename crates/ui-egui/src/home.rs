@@ -23,11 +23,14 @@ pub enum Section {
     Recents,
     Online,
     Templates,
+    /// The embedding page's library ([`crate::library`]); listed only while there is one.
+    Library,
 }
 
 impl Section {
-    /// The sidebar, top to bottom.
-    const ALL: [(Section, Icon, &'static str); 3] = [
+    /// The sidebar, top to bottom (the library first, with the name its page gives it).
+    const ALL: [(Section, Icon, &'static str); 4] = [
+        (Section::Library, Icon::Library, tr_noop("Library")),
         (Section::Recents, Icon::Home, tr_noop("Recents")),
         (Section::Online, Icon::Online, tr_noop("Online")),
         (Section::Templates, Icon::Assets, tr_noop("Templates")),
@@ -39,6 +42,7 @@ impl Section {
             Section::Recents => "recents",
             Section::Online => "online",
             Section::Templates => "templates",
+            Section::Library => "library",
         }
     }
 
@@ -160,6 +164,7 @@ pub fn show(app: &mut FigApp, ui: &mut Ui) {
                     if app.ui.home_view.file_query.trim().is_empty() {
                         match app.ui.home_view.section {
                             Section::Templates => templates(app, ui, &t),
+                            Section::Library if app.library.is_some() => crate::library::section(app, ui, &t),
                             _ => recents(app, ui, &t),
                         }
                     } else {
@@ -204,16 +209,22 @@ fn sidebar(app: &mut FigApp, ui: &mut Ui, t: &Tokens, left: Rect) {
     });
     y += widgets::FIELD_H + 12.0;
     for (section, icon, label) in Section::ALL {
+        let label = match (section, &app.library) {
+            (Section::Library, None) => continue,
+            (Section::Library, Some(library)) => library.title.clone(),
+            _ => tr(label).to_string(),
+        };
+        let label = label.as_str();
         let r = Rect::from_min_size(pos2(left.min.x + 8.0, y), vec2(SIDEBAR - 16.0, 32.0));
         let resp = ui.interact(r, ui.id().with(("home_section", label)), Sense::click());
         let current = app.ui.home_view.file_query.trim().is_empty() && app.ui.home_view.section == section;
-        a11y::tab(&resp, tr(label), current);
+        a11y::tab(&resp, label, current);
         if current || resp.hovered() {
             ui.painter().rect_filled(r, CornerRadius::same(5), if current { t.selected_row } else { t.hover });
         }
         focus_ring(ui, t, r, &resp, 5);
         icons::paint(ui.painter(), Rect::from_min_size(pos2(r.min.x + 10.0, r.center().y - 8.0), vec2(16.0, 16.0)), icon, t.icon);
-        ui.painter().text(pos2(r.min.x + 36.0, r.center().y), Align2::LEFT_CENTER, tr(label), regular(12.0), t.text);
+        ui.painter().text(pos2(r.min.x + 36.0, r.center().y), Align2::LEFT_CENTER, label, regular(12.0), t.text);
         if resp.clicked() {
             app.ui.home_view.section = section;
             app.ui.home_view.file_query.clear();

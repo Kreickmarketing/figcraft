@@ -7,7 +7,17 @@
 //! - `getFile`: `{name, bytes, thumbnail, dirty}` for the file in front: its `.figcraft` bytes and a
 //!   PNG of its first page (`thumbnail` null for an empty file);
 //! - `exportPng {scale?}`: `{name, bytes}`, the page in front as one PNG;
-//! - `status`: `{name, dirty, home}` (`name` null when no file is open).
+//! - `status`: `{name, dirty, home}` (`name` null when no file is open);
+//! - `setLibrary {title, files: [{id, name, detail, thumb}]}`: the page's file library, shown on the
+//!   home screen (`thumb` a PNG `Uint8Array` or null); the first one also opens the home screen on it.
+//!   From then on Save hands files to the page instead of downloading them;
+//! - `open {…, libraryId}`: the file opened came from the library;
+//! - `saved {uid, libraryId}` / `saveFailed {uid, error}`: how a `save` event ended;
+//! - `toast {text}`: a message in FigCraft's own toast.
+//!
+//! With a library, FigCraft also posts `{type: "figcraft:event", event, ...}`: `open {id}` (a library
+//! file was chosen), `save {uid, id, name, bytes, thumbnail}` (`id` null for a new file), `refresh`
+//! and `leave` (the page's button in the tab bar).
 //!
 //! Once the app has started it posts `{type: "figcraft:ready"}`. Messages from other origins are
 //! ignored. Requests are answered on the next frame, in order.
@@ -18,6 +28,7 @@ use std::rc::Rc;
 
 use base64::Engine as _;
 use figcraft_ui_egui::FigApp;
+use figcraft_ui_egui::library::{Library, LibraryFile, LibraryRequest};
 use js_sys::{Object, Reflect, Uint8Array};
 use serde_json::json;
 use wasm_bindgen::JsCast as _;
@@ -82,6 +93,29 @@ impl Bridge {
             set(&reply, "id", req.id);
             self.post(&reply);
         }
+        self.flush(fig);
+    }
+
+    /// Hand the page what the library asked for during the frame.
+    pub fn flush(&self, fig: &mut FigApp) {
+        let Some(library) = fig.library.as_mut() else { return };
+        for request in std::mem::take(&mut library.outbox) {
+            let event = match request {
+                LibraryRequest::Open { id } => fields(&[("event", "open".into()), ("id", id.into())]),
+                LibraryRequest::Save { uid, id, name, bytes, thumbnail } => fields(&[
+                    ("event", "save".into()),
+                    ("uid", (uid as f64).into()),
+                    ("id", id.map_or(JsValue::NULL, Into::into)),
+                    ("name", name.into()),
+                    ("bytes", Uint8Array::from(&bytes[..]).into()),
+                    ("thumbnail", thumbnail.map_or(JsValue::NULL, |t| Uint8Array::from(&t[..]).into())),
+                ]),
+                LibraryRequest::Refresh => fields(&[("event", "refresh".into())]),
+                LibraryRequest::Leave => fields(&[("event", "leave".into())]),
+            };
+            set(&event, "type", "figcraft:event".into());
+            self.post(&event);
+        }
     }
 
     fn post(&self, message: &Object) {
@@ -105,6 +139,48 @@ fn answer(fig: &mut FigApp, req: &Request) -> Result<Object, String> {
                 return Err(format!("FigCraft couldn't open {name}"));
             }
             fig.ui.home = false;
+            if let (Some(id), Some(library), Some(ds)) = (string(&req.data, "libraryId"), fig.library.as_mut(), fig.session.docs.get(fig.session.active)) {
+                library.origin.insert(ds.uid, id);
+            }
+            Ok(Object::new())
+        }
+        "setLibrary" => {
+            let files = Reflect::get(&req.data, &"files".into()).ok().filter(js_sys::Array::is_array).ok_or("setLibrary needs files")?;
+            let files = js_sys::Array::from(&files)
+                .iter()
+                .filter_map(|f| {
+                    Some(LibraryFile {
+                        id: string(&f, "id")?,
+                        name: string(&f, "name")?,
+                        detail: string(&f, "detail").unwrap_or_default(),
+                        thumb: Reflect::get(&f, &"thumb".into()).ok().and_then(|t| t.dyn_into::<Uint8Array>().ok()).map(|t| t.to_vec()),
+                    })
+                })
+                .collect();
+            let first = fig.library.is_none();
+            let library = fig.library.get_or_insert_with(Library::default);
+            library.title = string(&req.data, "title").unwrap_or_else(|| "Library".into());
+            library.set_files(files);
+            if first {
+                fig.ui.home = true;
+                fig.ui.home_view.section = figcraft_ui_egui::home::Section::Library;
+            }
+            Ok(Object::new())
+        }
+        "saved" => {
+            let uid = Reflect::get(&req.data, &"uid".into()).ok().and_then(|u| u.as_f64()).ok_or("saved needs a uid")? as u64;
+            let id = string(&req.data, "libraryId").ok_or("saved needs a libraryId")?;
+            figcraft_ui_egui::library::saved(fig, uid, id);
+            Ok(Object::new())
+        }
+        "saveFailed" => {
+            let uid = Reflect::get(&req.data, &"uid".into()).ok().and_then(|u| u.as_f64()).ok_or("saveFailed needs a uid")? as u64;
+            figcraft_ui_egui::library::save_failed(fig, uid);
+            fig.toast(string(&req.data, "error").unwrap_or_else(|| "Couldn't save to the Library".into()));
+            Ok(Object::new())
+        }
+        "toast" => {
+            fig.toast(string(&req.data, "text").ok_or("toast needs text")?);
             Ok(Object::new())
         }
         "getFile" => {

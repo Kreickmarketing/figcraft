@@ -78,6 +78,10 @@ impl eframe::App for WebShell {
             bridge.handle(&mut self.fig);
         }
         self.fig.ui(ui);
+        // What the frame asked of the page (a save, a library file to open) goes out now.
+        if let Some(bridge) = &self.bridge {
+            bridge.flush(&mut self.fig);
+        }
     }
 }
 

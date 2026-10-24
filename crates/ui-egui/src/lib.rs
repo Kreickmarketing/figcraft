@@ -35,6 +35,7 @@ pub mod icons;
 pub mod import_report;
 pub mod layers;
 pub mod layout_panel;
+pub mod library;
 pub mod list_drag;
 pub mod live;
 pub mod live_text;
@@ -802,6 +803,8 @@ pub struct FigApp {
     /// The automation roots the app was started with: every frame and control request runs
     /// confined to them ([`windows::guard`]).
     pub automation_roots: Option<Arc<figcraft_engine::file_access::Roots>>,
+    /// The embedding page's file library (the browser in Clearmark): None elsewhere.
+    pub library: Option<library::Library>,
 }
 
 /// What to do with the result of a command run in the background.
@@ -824,6 +827,7 @@ impl FigApp {
             language: None,
             field_focus: false,
             panels_unsaved: false,
+            library: None,
             control_queue: Vec::new(),
             control_input: Vec::new(),
             frame_stats: frame_stats::FrameStats::default(),
@@ -1140,6 +1144,9 @@ impl FigApp {
     }
 
     pub fn save_as_dialog(&mut self) {
+        if library::save(self, true) {
+            return;
+        }
         if self.services.downloads() {
             self.download_file();
             return;
@@ -1174,6 +1181,9 @@ impl FigApp {
     }
 
     pub fn save(&mut self) {
+        if library::save(self, false) {
+            return;
+        }
         // A branch tab saves its main file.
         let tab = figcraft_engine::branches::file_tab(&self.session);
         // A path ending in .fig is never saved over silently: a .fig destination is an export copy.

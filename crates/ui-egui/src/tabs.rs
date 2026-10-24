@@ -101,6 +101,8 @@ pub fn tab_bar(app: &mut FigApp, ui: &mut Ui) {
         let rect = ui.max_rect();
         let buttons_w = if app.ui.title_bar == TitleBar::Custom { window_buttons(app, ui, rect) } else { 0.0 };
         let mut x = rect.min.x + if app.ui.title_bar == TitleBar::Inset { 76.0 } else { 8.0 };
+        // The embedding page's own button (Clearmark), before Home.
+        x += crate::library::tab_bar_button(app, ui, x, rect, HEIGHT);
         // Home.
         let hr = Rect::from_min_size(pos2(x, rect.min.y), vec2(44.0, HEIGHT));
         let hresp = ui.interact(hr, ui.id().with("home"), Sense::click()).tip(tr("Home"));
