@@ -47,7 +47,8 @@ pub fn start() {
                         let link = js_sys::decode_uri_component(link).ok().and_then(|s| s.as_string()).unwrap_or_else(|| link.to_string());
                         figcraft_ui_egui::live::open_invite(&mut fig, &link);
                     }
-                    Ok(Box::new(WebShell { fig }))
+                    let bridge = crate::bridge::Bridge::install(cc.egui_ctx.clone());
+                    Ok(Box::new(WebShell { fig, bridge }))
                 }),
             )
             .await;
@@ -66,11 +67,16 @@ fn query() -> String {
 
 struct WebShell {
     fig: FigApp,
+    /// Requests from the page embedding FigCraft (none outside a frame).
+    bridge: Option<crate::bridge::Bridge>,
 }
 
 impl eframe::App for WebShell {
     // `FigApp::ui` runs its own per-frame logic first (fonts, theme), like the desktop app.
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        if let Some(bridge) = &self.bridge {
+            bridge.handle(&mut self.fig);
+        }
         self.fig.ui(ui);
     }
 }
